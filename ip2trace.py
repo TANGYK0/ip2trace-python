@@ -7,6 +7,7 @@ import time
 import sys
 import select
 import argparse
+from zipfile import ZipFile
 import IP2Location
 from random import choices
 from re import match
@@ -40,7 +41,10 @@ if (os.path.isfile(default_path + "IP2LOCATION-LITE-DB1.IPV6.BIN") == False):
         # create the dir is not exist
         if (os.path.exists(default_path) is False):
             os.mkdir(default_path)
-        copyfile(os.path.dirname(os.path.realpath(__file__)) + os.sep + "data" + os.sep + "IP2LOCATION-LITE-DB1.IPV6.BIN", default_path + "IP2LOCATION-LITE-DB1.IPV6.BIN")
+        # copyfile(os.path.dirname(os.path.realpath(__file__)) + os.sep + "data" + os.sep + "IP2LOCATION-LITE-DB1.IPV6.BIN", default_path + "IP2LOCATION-LITE-DB1.IPV6.BIN")
+        zipfile = os.path.dirname(os.path.realpath(__file__)) + os.sep + "data" + os.sep + "IP2LOCATION-LITE-DB1.IPV6.BIN.zip"
+        with ZipFile(zipfile, 'r') as zipf:
+            zipf.extractall(default_path)
     except PermissionError as e:
         sys.exit("Root permission is required. Please rerun it as 'sudo ip2tracepy' in Linux, or obtain administrator permission in Windows.")
 
@@ -152,7 +156,7 @@ def print_usage():
 def print_version():
     print(
 "IP2Location Geolocation Traceroute (ip2trace) Version 3.2.0\n"
-"Copyright (c) 2021 - 2024 IP2Location.com [MIT License]\n"
+"Copyright (c) 2023 IP2Location.com [MIT License]\n"
 "https://www.ip2location.com/free/traceroute-application\n")
 
 def traceroute(destination_server, database, ttl, output, all):
@@ -172,6 +176,7 @@ class Traceroute:
         self.all = all
         self.family = None
 
+        self.routes = []
         self.count_of_packets = 1
         self.packet_size = 80
         # self.timeout = 1000
@@ -229,7 +234,7 @@ class Traceroute:
 
     def print_start(self):
         print("IP2Location Geolocation Traceroute (ip2trace) Version 3.2.0\n"
-"Copyright (c) 2021 - 2024 IP2Location.com [MIT License]\n"
+"Copyright (c) 2022 IP2Location.com [MIT License]\n"
 "https://www.ip2location.com/free/traceroute-application\n\n")
         if self.destination_domain_name is not None:
             print("Traceroute to", self.destination_domain_name[0], "(", self.destination_ip, ")\n\n", end="")
@@ -252,7 +257,10 @@ class Traceroute:
     # def print_trace(self, delay, ip_header):
     def print_trace(self, delays, ip_header):
         total_delays = 0
-        ip = socket.inet_ntoa(struct.pack('!I', ip_header['Source_IP']))
+        if is_ipv4(self.destination_ip) == 4:
+            ip = socket.inet_ntop(self.family,struct.pack('!I', ip_header['Source_IP']))
+        elif is_ipv6(self.destination_ip) == 6:
+            ip = socket.inet_ntop(self.family, struct.pack('!16s', ip_header['Source_IP']))
         try:
             sender_hostname = socket.gethostbyaddr(ip)[0]
         except socket.herror:
@@ -311,10 +319,11 @@ class Traceroute:
                 if display_result.endswith(','):
                     display_result = display_result[:-1]
                 display_result = display_result + ']'
+                if  '"-"' not in display_result : self.routes.append((display_result,"{:.3f}ms".format(delays[-1])))
                 print("{}".format(display_result), end="")
             self.prev_sender_hostname = sender_hostname
         else:
-            print("{:.3f} ms ".format(delay), end="")
+            print("{:.3f} ms".format(delay), end="")
         if self.seq_no == self.count_of_packets:
             print()
             self.prev_sender_hostname = ""
@@ -341,6 +350,7 @@ class Traceroute:
                     break
                 elif is_ipv6(self.destination_ip) == 6 and icmp_header['type'] == ICMP_V6_ECHO_REPLY:
                     break
+
 
     def tracer(self):
         self.seq_no += 1
@@ -432,11 +442,30 @@ class Traceroute:
                 # self.print_timeout()
                 return None, None, None
             packet_data, address = icmp_socket.recvfrom(1024)
-            icmp_keys = ['type', 'code', 'checksum', 'identifier', 'sequence number']
-            icmp_header = self.header_to_dict(icmp_keys, packet_data[20:28], "!BBHHH")
-            ip_keys = ['VersionIHL', 'Type_of_Service', 'Total_Length', 'Identification', 'Flags_FragOffset', 'TTL', 'Protocol', 'Header_Checksum', 'Source_IP', 'Destination_IP']
-            ip_header = self.header_to_dict(ip_keys, packet_data[:20], "!BBHHHBBHII")
-            # print ("Source_IP1", ip_header['Source_IP'])
+            icmp_header = {}
+            ip_header = {}
+            if is_ipv4(self.destination_ip) == 4:
+                icmp_keys = ['type', 'code', 'checksum', 'identifier', 'sequence number']
+                icmp_header = self.header_to_dict(icmp_keys, packet_data[20:28], "!BBHHH")
+                ip_keys = ['VersionIHL', 'Type_of_Service', 'Total_Length', 'Identification', 'Flags_FragOffset', 'TTL', 'Protocol', 'Header_Checksum', 'Source_IP', 'Destination_IP']
+                ip_header = self.header_to_dict(ip_keys, packet_data[:20], "!BBHHHBBHII")
+            elif is_ipv6(self.destination_ip) == 6:
+                icmp_keys = ['type', 'code', 'checksum', 'identifier', 'sequence number']
+                icmp_header = self.header_to_dict(icmp_keys, packet_data[:8], "!BBHHH")
+                if  icmp_header['type'] == 135:
+                    ip_keys = ['Version_Traffic_Class_Flow_Label', 'Payload_Length', 'Next_Header', 'Hop_Limit', 'Destination_IP']
+                    struct_format = "!IHBB16s"
+                    end_index = 32
+                elif icmp_header['type'] == 136:
+                    ip_keys = ['Destination_IP']
+                    struct_format = "!16s"
+                    end_index = 24
+                else:
+                    ip_keys = ['Version_Traffic_Class_Flow_Label', 'Payload_Length', 'Next_Header', 'Hop_Limit', 'Source_IP', 'Destination_IP']
+                    struct_format = "!IHBB16s16s"
+                    end_index = 48
+                ip_header = self.header_to_dict(ip_keys, packet_data[8:end_index], struct_format)
+                ip_header['Source_IP'] = socket.inet_pton(self.family, address[0])
             return receive_time, icmp_header, ip_header
 
 # if __name__ == '__main__':
